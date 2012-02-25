@@ -36,10 +36,32 @@ class Tokenizer
     @input_stream = is
   end
   
+  ###
+  # 次の num 文字を返す.
+  # EOF に達したばあい, num より少ない文字数を返す
+  def get_next_chars( num )
+    pos = @input_stream.pos
+    s = ''
+    begin
+      num.times { s << @input_stream.readchar }
+    rescue EOFError
+    end
+    @input_stream.pos = pos
+    s
+  end
+  
   def consume_next_char()
     return @input_stream.readchar()
   rescue EOFError => err
-    return nil
+    return ''
+  end
+  
+  def reconsume_char( char )
+    pos = @input_stream.pos - char.bytesize
+    @input_stream.pos = pos
+    @input_stream.print char
+    @input_stream.pos = pos
+    nil
   end
   
   def emit( token )
@@ -52,6 +74,10 @@ class Tokenizer
     end
   rescue StopParsing
     @tree_constructor.stop_parsing()
+  end
+  
+  def current_node
+    @tree_constructor.current_node
   end
   
   HANDLER_NAMES = []
@@ -84,10 +110,163 @@ class Tokenizer
     when "\u0000"
       # TODO: parse error
       emit Token::Character.new( c )
-    when nil
+    when '' # EOF
       emit Token::EOF.new()
     else
       emit Token::Character.new( c )
+    end
+  end
+  
+  # 8.2.4.8 Tag open state
+  ST_TAG_OPEN = 8
+  HANDLER_NAMES[ ST_TAG_OPEN ] = :h_st_tag_open
+  def h_st_tag_open
+    c = consume_next_char()
+    case c
+    when '!'
+      change_state ST_MARKUP_DECLARATION_OPEN
+    when '/'
+      change_state ST_END_TAG_OPEN
+    when 'A'..'Z'
+      # Create a new start tag token, set its tag name to the lowercase version of the current 
+      # input character (add 0x0020 to the character's code point), then switch to the tag name state. 
+      # (Don't emit the token yet; further details will be filled in before it is emitted.)
+      @current_tag_token = Token::TagStart.new( c.downcase )
+      change_state ST_TAG_NAME
+    when 'a'..'z'
+      # Create a new start tag token, set its tag name to the current input character, 
+      # then switch to the tag name state.
+      # (Don't emit the token yet; further details will be filled in before it is emitted.)
+      @current_tag_token = Token::TagStart.new( c )
+      change_state ST_TAG_NAME
+    when '?'
+      # TODO: Parse error. 
+      change_state ST_BOGUS_COMMENT
+    else
+      # TODO: Parse error. 
+      change_state ST_DATA
+      emit Token::Character.new( '<' )
+      reconsume_char( c )
+    end
+  end
+  
+  # 8.2.4.45 Markup declaration open state
+  ST_MARKUP_DECLARATION_OPEN = 45
+  HANDLER_NAMES[ ST_MARKUP_DECLARATION_OPEN ] = :h_st_markup_declaration_open
+  def h_st_markup_declaration_open()
+    # If the next two characters are both U+002D HYPHEN-MINUS characters (-),
+    # consume those two characters, create a comment token whose data is the empty string,
+    # and switch to the comment start state.
+    if '--' == get_next_chars( 2 )
+      consume_next_char()
+      consume_next_char()
+      Token::Comment.new( '' )
+      change_state ST_COMMENT_START
+    
+    # Otherwise, if the next seven characters are an ASCII case-insensitive match for the word "DOCTYPE",
+    # then consume those characters and switch to the DOCTYPE state.
+    elsif 'DOCTYPE' == get_next_chars( 7 ).upcase
+      7.times { consume_next_char() }
+      change_state ST_DOCTYPE
+    
+    else
+    # Otherwise, if there is a current node and it is not an element in the HTML namespace 
+    # and the next seven characters are a case-sensitive match for the string 
+    # "[CDATA[" (the five uppercase letters "CDATA" with a U+005B LEFT SQUARE BRACKET 
+    # character before and after), then consume those characters and switch to the CDATA section state.
+    #elsif n = current_node and n.node_type
+      
+    #Otherwise, this is a parse error. Switch to the bogus comment state.
+    # The next character that is consumed, if any, is the first character that will be in the comment.
+      raise NotImplementedError.new()
+    end
+  end
+  
+  # 8.2.4.52 DOCTYPE state
+  ST_DOCTYPE = 52
+  HANDLER_NAMES[ ST_DOCTYPE ] = :h_st_doctype
+  def h_st_doctype()
+    c = consume_next_char()
+    case c
+    when "\u0009", "\u000A", "\u000C", "\u0020"
+      change_state ST_BEFORE_DOCTYPE_NAME
+    when '' # EOF
+      raise NotImplementedError.new()
+      # TODO: Parse error.
+      change_state ST_DATA
+      # Create a new DOCTYPE token.
+      # Set its force-quirks flag to on.
+      # Emit the token.
+      # do nothing to reconsume the EOF character.
+    else
+      # TODO: Parse error.
+      change_state ST_BEFORE_DOCTYPE_NAME
+      reconsume_char( c )
+    end
+  end
+  
+  # 8.2.4.53 Before DOCTYPE name state
+  ST_BEFORE_DOCTYPE_NAME = 53
+  HANDLER_NAMES[ ST_BEFORE_DOCTYPE_NAME ] = :h_st_before_doctype_name
+  def h_st_before_doctype_name()
+    c = consume_next_char()
+    case c
+    when "\u0009", "\u000A", "\u000C", "\u0020"
+      # ignore the character
+    when 'A'..'Z'
+      @current_doctype_token = Token::DOCTYPE.new()
+      @current_doctype_token.name = c.downcase
+      change_state ST_DOCTYPE_NAME
+    when "\u0000"
+      # TODO: Parse error.
+      @current_doctype_token = Token::DOCTYPE.new()
+      @current_doctype_token.name = "\uFFFD" # Set the token's name to a U+FFFD REPLACEMENT CHARACTER character.
+      change_state ST_DOCTYPE_NAME
+    when '>' # U+003E GREATER-THAN SIGN (>)
+      # TODO: Parse error.
+      t = Token::DOCTYPE.new()
+      t.force_quirks_flag = true # Set its force-quirks flag to on.
+      change_state ST_DATA
+      emit t
+    when '' # EOF
+      # TODO: Parse error.
+      change_state ST_DATA
+      t = Token::DOCTYPE.new()
+      t.force_quirks_flag = true # Set its force-quirks flag to on.
+      emit t
+      # do nothing to reconsume the EOF character.
+    else
+      @current_doctype_token = Token::DOCTYPE.new()
+      @current_doctype_token.name = c
+      change_state ST_DOCTYPE_NAME
+    end
+  end
+  
+  # 8.2.4.54 DOCTYPE name state
+  ST_DOCTYPE_NAME = 54
+  HANDLER_NAMES[ ST_DOCTYPE_NAME ] = :h_st_doctype_name
+  def h_st_doctype_name()
+    c = consume_next_char()
+    case c
+    when "\u0009", "\u000A", "\u000C", "\u0020"
+      change_state ST_AFTER_DOCTYPE_NAME
+    when '>'
+      change_state ST_DATA
+      emit @current_doctype_token
+    when 'A'..'Z'
+      @current_doctype_token.name << c.downcase
+    when "\u0000"
+      # TODO: Parse error.
+      # Append a U+FFFD REPLACEMENT CHARACTER character to the current DOCTYPE token's name.
+      @current_doctype_token.name << "\uFFFD"
+    when '' # EOF
+      # TODO: Parse error.
+      change_state ST_DATA
+      @current_doctype_token.force_quirks_flag = true # Set the DOCTYPE token's force-quirks flag to on.
+      emit @current_doctype_token
+      # do nothing to reconsume the EOF character.
+    else
+      @current_doctype_token.name << c
     end
   end
   

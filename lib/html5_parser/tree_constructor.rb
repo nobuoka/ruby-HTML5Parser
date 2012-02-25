@@ -128,7 +128,29 @@ class TreeConstructor
     when Token::COMMENT_TYPE
       raise NotImplementedError.new()
     when Token::DOCTYPE_TYPE
-      raise NotImplementedError.new()
+      if token.name != 'html' or not token.public_identifier.nil? or
+            not ( token.system_identifier.nil? or token.system_identifier == 'about:legacy-compat' )
+        if not [
+              # [ token.name, token.public_identifier, token.system_identifier ]
+                [ 'html', '-//W3C//DTD HTML 4.0//EN',         nil                                                 ],
+                [ 'html', '-//W3C//DTD HTML 4.0//EN',         'http://www.w3.org/TR/REC-html40/strict.dtd'        ],
+                [ 'html', '-//W3C//DTD HTML 4.01//EN',        nil                                                 ],
+                [ 'html', '-//W3C//DTD HTML 4.01//EN',        'http://www.w3.org/TR/html4/strict.dtd'             ],
+                [ 'html', '-//W3C//DTD XHTML 1.0 Strict//EN', 'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd' ],
+                [ 'html', '-//W3C//DTD XHTML 1.1//EN',        'http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd'      ],
+              ].include? [ token.name, token.public_identifier, token.system_identifier ]
+          # TODO: parse error
+        end
+      end
+      
+      # append DOCTYPE node into document
+      dtn = @doc.implementation.create_document_type( 
+                token.name || '', token.public_identifier || '', token.system_identifier || '' )
+      @doc.append_child( dtn )
+      
+      # TODO: DOCTYPE の状態によって Document の quirks mode を変化
+      
+      change_insertion_mode IM_BEFORE_HTML
     else
       if token.type == Token::CHARACTER_TYPE and 
             [ "\u0009", "\u000A", "\u000C", "\u000D", "\u0020" ].include? token.data

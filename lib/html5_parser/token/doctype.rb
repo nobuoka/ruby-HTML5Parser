@@ -25,6 +25,9 @@ class DOCTYPE
   def name
     @name
   end
+  def name=( v )
+    @name = v
+  end
   
   def public_identifier
     @public_identifier
@@ -36,6 +39,9 @@ class DOCTYPE
   
   def force_quirks_flag
     @force_quirks_flag
+  end
+  def force_quirks_flag=( v )
+    @force_quirks_flag = v
   end
   
 end
